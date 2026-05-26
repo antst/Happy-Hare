@@ -663,6 +663,17 @@ class MmuSensors:
         if switch_pin:
             self._create_mmu_sensor(config, Mmu.SENSOR_TOOLHEAD, None, switch_pin, event_delay)
 
+        # Optional sensors flanking an inline booster stepper sitting between
+        # the gear and the extruder. Both are single global sensors (the
+        # booster is downstream of any selector merge); leave unset on
+        # setups without a booster.
+        switch_pin = config.get('pre_booster_switch_pin', None)
+        if switch_pin:
+            self._create_mmu_sensor(config, Mmu.SENSOR_PRE_BOOSTER, None, switch_pin, event_delay, runout=True)
+        switch_pin = config.get('post_booster_switch_pin', None)
+        if switch_pin:
+            self._create_mmu_sensor(config, Mmu.SENSOR_POST_BOOSTER, None, switch_pin, event_delay, runout=True)
+
         # For Qidi printers or any other that use a hall_filament_width_sensor as an endstop
         hall_sensor_endstop = config.get('hall_sensor_endstop', None)
         if hall_sensor_endstop is not None:

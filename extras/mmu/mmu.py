@@ -121,6 +121,12 @@ class Mmu:
     SENSOR_TOOLHEAD            = "toolhead"
     SENSOR_EXTRUDER_TOUCH      = "mmu_ext_touch"
 
+    # Optional sensors flanking an inline booster stepper (between the gear
+    # and extruder). Detected at the chain stage's entry/exit; safe to leave
+    # unconfigured on setups without a booster.
+    SENSOR_PRE_BOOSTER         = "pre_booster"   # Filament has reached booster entry
+    SENSOR_POST_BOOSTER        = "post_booster"  # Filament has left the booster
+
     SENSOR_SELECTOR_TOUCH      = "mmu_sel_touch"  # For LinearSelector and LinearServoSelector
     SENSOR_SELECTOR_HOME       = "mmu_sel_home"   # For LinearSelector and LinearServoSelector
     SENSOR_PRE_GATE_PREFIX     = "mmu_pre_gate"

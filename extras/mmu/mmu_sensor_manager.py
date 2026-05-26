@@ -43,6 +43,8 @@ class MmuSensorManager:
                 sensor_names.append(self.get_unit_sensor_name(self.mmu.SENSOR_COMPRESSION, i))
                 sensor_names.append(self.get_unit_sensor_name(self.mmu.SENSOR_PROPORTIONAL, i))
         sensor_names.extend([
+            self.mmu.SENSOR_PRE_BOOSTER,
+            self.mmu.SENSOR_POST_BOOSTER,
             self.mmu.SENSOR_EXTRUDER_ENTRY,
             self.mmu.SENSOR_TOOLHEAD
         ])
@@ -68,6 +70,8 @@ class MmuSensorManager:
                 self.endstop_names.append(self.get_unit_sensor_name(self.mmu.SENSOR_COMPRESSION, i))
                 self.endstop_names.append(self.get_unit_sensor_name(self.mmu.SENSOR_TENSION, i))
         self.endstop_names.extend([
+            self.mmu.SENSOR_PRE_BOOSTER,
+            self.mmu.SENSOR_POST_BOOSTER,
             self.mmu.SENSOR_EXTRUDER_ENTRY,
             self.mmu.SENSOR_TOOLHEAD
         ])
@@ -106,6 +110,8 @@ class MmuSensorManager:
             self.mmu.SENSOR_COMPRESSION: self.get_mapped_endstop_name(self.mmu.SENSOR_COMPRESSION),
             self.mmu.SENSOR_TENSION: self.get_mapped_endstop_name(self.mmu.SENSOR_TENSION),
             self.mmu.SENSOR_PROPORTIONAL: self.get_mapped_endstop_name(self.mmu.SENSOR_PROPORTIONAL),
+            self.mmu.SENSOR_PRE_BOOSTER: self.mmu.SENSOR_PRE_BOOSTER,
+            self.mmu.SENSOR_POST_BOOSTER: self.mmu.SENSOR_POST_BOOSTER,
             self.mmu.SENSOR_EXTRUDER_ENTRY: self.mmu.SENSOR_EXTRUDER_ENTRY,
             self.mmu.SENSOR_TOOLHEAD: self.mmu.SENSOR_TOOLHEAD
         }
@@ -296,6 +302,9 @@ class MmuSensorManager:
                 (self.get_gate_sensor_name(self.mmu.SENSOR_PRE_GATE_PREFIX, gate), None),
                 (self.get_gate_sensor_name(self.mmu.SENSOR_GEAR_PREFIX, gate), self.mmu.FILAMENT_POS_HOMED_GATE if self.mmu.gate_homing_endstop == self.mmu.SENSOR_GEAR_PREFIX and self.mmu.gate_parking_distance <= 0 else None),
                 (self.mmu.SENSOR_GATE, self.mmu.FILAMENT_POS_HOMED_GATE),
+                # None until per-buffer FILAMENT_POS_* crossing states land
+                (self.mmu.SENSOR_PRE_BOOSTER, None),
+                (self.mmu.SENSOR_POST_BOOSTER, None),
                 (self.mmu.SENSOR_EXTRUDER_ENTRY, self.mmu.FILAMENT_POS_HOMED_ENTRY),
                 (self.mmu.SENSOR_TOOLHEAD, self.mmu.FILAMENT_POS_HOMED_TS),
             ]
