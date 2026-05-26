@@ -380,6 +380,16 @@ class MmuMachine:
             self.unit_status["unit_%d" % i] = unit_info
             self.unit_status['num_units'] = len(self.gate_counts)
 
+    @property
+    def has_booster(self):
+        """True if [stepper_mmu_booster] is configured.
+
+        Use to gate booster-specific UI/diagnostic paths; the runtime
+        sync/move paths do not need to branch on this because the booster
+        moves with the gear rail automatically.
+        """
+        return self.config.has_section(BOOSTER_STEPPER_CONFIG)
+
     def get_mmu_unit_by_index(self, index): # Hack to allow some v4 functionality into the v3 line
         if index >= 0 and index < self.num_units:
             return self.units[index]
@@ -638,7 +648,7 @@ class MmuToolHead(toolhead.ToolHead, object):
         pos = [0., self.mmu_toolhead.get_position()[1], 0.]
         gear_rail.steppers = []
 
-        booster_steppers = getattr(self.mmu_machine, 'booster_steppers', None) or []
+        booster_steppers = getattr(self, 'booster_steppers', None) or []
         self.selected_gear_steppers = []
         for s in self.all_gear_rail_steppers:
             # Booster steppers must always stay registered: they are mechanically
