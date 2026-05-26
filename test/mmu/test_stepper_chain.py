@@ -20,17 +20,25 @@ _spec = importlib.util.spec_from_file_location("_stepper_chain_under_test", _CHA
 sc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sc)
 
-Buffer                = sc.Buffer
-Chain                 = sc.Chain
-PsfConfig             = sc.PsfConfig
-Stage                 = sc.Stage
-chain_from_legacy_n2  = sc.chain_from_legacy_n2
-GRIP_ALWAYS           = sc.GRIP_ALWAYS
-GRIP_RELEASABLE       = sc.GRIP_RELEASABLE
-MASTER_SPOOL          = sc.MASTER_SPOOL
-MASTER_TOOLHEAD       = sc.MASTER_TOOLHEAD
-ROLE_KLIPPER_EXTRUDER = sc.ROLE_KLIPPER_EXTRUDER
-ROLE_MMU_RAIL         = sc.ROLE_MMU_RAIL
+Buffer                          = sc.Buffer
+Chain                           = sc.Chain
+PsfConfig                       = sc.PsfConfig
+Stage                           = sc.Stage
+SyncGroup                       = sc.SyncGroup
+chain_from_legacy_n2            = sc.chain_from_legacy_n2
+sync_group_from_legacy          = sc.sync_group_from_legacy
+sync_group_to_legacy            = sc.sync_group_to_legacy
+GRIP_ALWAYS                     = sc.GRIP_ALWAYS
+GRIP_RELEASABLE                 = sc.GRIP_RELEASABLE
+MASTER_SPOOL                    = sc.MASTER_SPOOL
+MASTER_TOOLHEAD                 = sc.MASTER_TOOLHEAD
+ROLE_KLIPPER_EXTRUDER           = sc.ROLE_KLIPPER_EXTRUDER
+ROLE_MMU_RAIL                   = sc.ROLE_MMU_RAIL
+LEGACY_NONE                     = sc.LEGACY_NONE
+LEGACY_EXTRUDER_SYNCED_TO_GEAR  = sc.LEGACY_EXTRUDER_SYNCED_TO_GEAR
+LEGACY_EXTRUDER_ONLY_ON_GEAR    = sc.LEGACY_EXTRUDER_ONLY_ON_GEAR
+LEGACY_GEAR_SYNCED_TO_EXTRUDER  = sc.LEGACY_GEAR_SYNCED_TO_EXTRUDER
+LEGACY_GEAR_ONLY                = sc.LEGACY_GEAR_ONLY
 
 
 def _make_stage(name="x", role=ROLE_MMU_RAIL, grip=GRIP_RELEASABLE):
@@ -376,6 +384,134 @@ class TestLegacyN2(unittest.TestCase):
         c.set_master_end(MASTER_SPOOL)
         self.assertEqual(c.local_master(0), 0)  # gear
         self.assertEqual(c.local_slave(0), 1)   # extruder
+
+
+class TestSyncGroup(unittest.TestCase):
+    def test_basic_construction(self):
+        g = SyncGroup(engagement=[True, True])
+        self.assertEqual(g.n, 2)
+        self.assertEqual(g.master_end, MASTER_TOOLHEAD)
+        self.assertTrue(g.sync_active)
+        self.assertEqual(g.engaged_stages(), [0, 1])
+
+    def test_invalid_master_end(self):
+        with self.assertRaises(ValueError):
+            SyncGroup(engagement=[True, True], master_end="nope")
+
+    def test_requires_at_least_two_stages(self):
+        with self.assertRaises(ValueError):
+            SyncGroup(engagement=[True])
+
+    def test_equality_and_hash(self):
+        a = SyncGroup([True, True], MASTER_TOOLHEAD, True)
+        b = SyncGroup([True, True], MASTER_TOOLHEAD, True)
+        c = SyncGroup([True, True], MASTER_SPOOL, True)
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, c)
+        self.assertEqual(hash(a), hash(b))
+        self.assertNotEqual(a, "not a SyncGroup")
+
+
+class TestLegacyBijection(unittest.TestCase):
+    # ---- from_legacy ----
+
+    def test_none_to_unsynced(self):
+        g = sync_group_from_legacy(LEGACY_NONE)
+        self.assertEqual(g.engagement, [True, True])
+        self.assertFalse(g.sync_active)
+
+    def test_gear_only_to_unsynced(self):
+        g = sync_group_from_legacy(LEGACY_GEAR_ONLY)
+        self.assertEqual(g.engagement, [True, True])
+        self.assertFalse(g.sync_active)
+        # None and GEAR_ONLY are chain-equivalent
+        self.assertEqual(g, sync_group_from_legacy(LEGACY_NONE))
+
+    def test_gear_synced_to_extruder(self):
+        # Print direction: extruder master, gear follows.
+        g = sync_group_from_legacy(LEGACY_GEAR_SYNCED_TO_EXTRUDER)
+        self.assertEqual(g.engagement, [True, True])
+        self.assertEqual(g.master_end, MASTER_TOOLHEAD)
+        self.assertTrue(g.sync_active)
+
+    def test_extruder_synced_to_gear(self):
+        # MMU-op direction: gear master, extruder follows.
+        g = sync_group_from_legacy(LEGACY_EXTRUDER_SYNCED_TO_GEAR)
+        self.assertEqual(g.engagement, [True, True])
+        self.assertEqual(g.master_end, MASTER_SPOOL)
+        self.assertTrue(g.sync_active)
+
+    def test_extruder_only_on_gear(self):
+        # Special routing: gear disengaged, extruder routed on gear rail.
+        g = sync_group_from_legacy(LEGACY_EXTRUDER_ONLY_ON_GEAR)
+        self.assertEqual(g.engagement, [False, True])
+        self.assertEqual(g.master_end, MASTER_SPOOL)
+        self.assertTrue(g.sync_active)
+
+    def test_unknown_legacy_mode_raises(self):
+        with self.assertRaises(ValueError):
+            sync_group_from_legacy(999)
+
+    # ---- to_legacy ----
+
+    def test_to_legacy_unsynced_default_none(self):
+        g = SyncGroup([True, True], MASTER_TOOLHEAD, sync_active=False)
+        self.assertEqual(sync_group_to_legacy(g), LEGACY_NONE)
+
+    def test_to_legacy_unsynced_prefer_gear_only(self):
+        g = SyncGroup([True, True], MASTER_TOOLHEAD, sync_active=False)
+        self.assertEqual(
+            sync_group_to_legacy(g, prefer_gear_only_for_unsynced=True),
+            LEGACY_GEAR_ONLY,
+        )
+
+    def test_to_legacy_gear_synced_to_extruder(self):
+        g = SyncGroup([True, True], MASTER_TOOLHEAD, sync_active=True)
+        self.assertEqual(sync_group_to_legacy(g), LEGACY_GEAR_SYNCED_TO_EXTRUDER)
+
+    def test_to_legacy_extruder_synced_to_gear(self):
+        g = SyncGroup([True, True], MASTER_SPOOL, sync_active=True)
+        self.assertEqual(sync_group_to_legacy(g), LEGACY_EXTRUDER_SYNCED_TO_GEAR)
+
+    def test_to_legacy_extruder_only_on_gear(self):
+        g = SyncGroup([False, True], MASTER_SPOOL, sync_active=True)
+        self.assertEqual(sync_group_to_legacy(g), LEGACY_EXTRUDER_ONLY_ON_GEAR)
+
+    def test_to_legacy_n3_rejected(self):
+        g = SyncGroup([True, True, True], MASTER_TOOLHEAD, sync_active=True)
+        with self.assertRaises(ValueError):
+            sync_group_to_legacy(g)
+
+    def test_to_legacy_unsynced_disengaged_rejected(self):
+        # Unsynced with one stage disengaged is not a legacy state (legacy
+        # handles per-stepper disable via _reconfigure_rail_no_lock).
+        g = SyncGroup([False, True], MASTER_TOOLHEAD, sync_active=False)
+        with self.assertRaises(ValueError):
+            sync_group_to_legacy(g)
+
+    # ---- bijection round-trip ----
+
+    def test_bijection_all_known_modes(self):
+        # All legacy modes except LEGACY_GEAR_ONLY round-trip cleanly with the
+        # default preference. LEGACY_GEAR_ONLY collapses to LEGACY_NONE on
+        # to_legacy because they are chain-equivalent.
+        for legacy in (LEGACY_NONE,
+                       LEGACY_GEAR_SYNCED_TO_EXTRUDER,
+                       LEGACY_EXTRUDER_SYNCED_TO_GEAR,
+                       LEGACY_EXTRUDER_ONLY_ON_GEAR):
+            g = sync_group_from_legacy(legacy)
+            self.assertEqual(sync_group_to_legacy(g), legacy,
+                             "round-trip failed for %r" % legacy)
+
+    def test_bijection_gear_only_collapses_to_none(self):
+        g = sync_group_from_legacy(LEGACY_GEAR_ONLY)
+        # Default preference picks LEGACY_NONE; with prefer_gear_only=True you
+        # get LEGACY_GEAR_ONLY back.
+        self.assertEqual(sync_group_to_legacy(g), LEGACY_NONE)
+        self.assertEqual(
+            sync_group_to_legacy(g, prefer_gear_only_for_unsynced=True),
+            LEGACY_GEAR_ONLY,
+        )
 
 
 if __name__ == "__main__":

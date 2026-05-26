@@ -310,6 +310,141 @@ class Chain(object):
         return list(range(left_stage, right_stage))
 
 
+# ---------- SyncGroup: point-in-time sync state descriptor ----------
+
+# Legacy 4-state sync enum values from MmuToolHead (in extras/mmu_machine.py).
+# Kept here as constants so the bijection helpers below can be unit-tested
+# without importing the Klipper-dependent mmu_machine module.
+LEGACY_NONE                    = None
+LEGACY_EXTRUDER_SYNCED_TO_GEAR = 1   # "gear+extruder": gear is master, extruder follows on gear rail
+LEGACY_EXTRUDER_ONLY_ON_GEAR   = 2   # "extruder":       extruder follows on gear rail, gear disabled
+LEGACY_GEAR_SYNCED_TO_EXTRUDER = 3   # "extruder+gear":  extruder is master, gear follows on extruder
+LEGACY_GEAR_ONLY               = 4   # "gear":           independent; same logical state as None but with a fence
+
+
+class SyncGroup(object):
+    """Point-in-time description of the chain's mechanical sync state.
+
+    Captures three pieces:
+      - ``engagement``: per-stage boolean, which stages currently grip the
+        filament (and therefore participate in the sync chain).
+      - ``master_end``: which end of the chain is the chain-master at this
+        moment (cascade then determines local masters per buffer).
+      - ``sync_active``: whether the engaged stages are mechanically coupled
+        (sync mode on) or operating independently (sync mode off).
+
+    Transitions between two ``SyncGroup`` instances drive the Klipper trapq
+    cutover work that ``_resync_no_lock`` does today. A future phase will
+    refactor that function to consume ``SyncGroup`` directly; for now this
+    class is a documented descriptor with a bijection to/from the legacy
+    4-state enum so call sites can be migrated incrementally.
+
+    At N=2, the bijection to legacy modes is:
+        LEGACY_NONE / LEGACY_GEAR_ONLY:
+            SyncGroup([T,T], any master, sync_active=False)
+            (None and GEAR_ONLY are equivalent in chain semantics; the legacy
+             distinction is a Klipper plumbing fence, not a chain state.)
+        LEGACY_GEAR_SYNCED_TO_EXTRUDER:
+            SyncGroup([T,T], MASTER_TOOLHEAD, sync_active=True)
+        LEGACY_EXTRUDER_SYNCED_TO_GEAR:
+            SyncGroup([T,T], MASTER_SPOOL, sync_active=True)
+        LEGACY_EXTRUDER_ONLY_ON_GEAR:
+            SyncGroup([F,T], MASTER_SPOOL, sync_active=True)
+    """
+
+    def __init__(self, engagement, master_end=MASTER_TOOLHEAD, sync_active=True):
+        if master_end not in MASTER_ENDS:
+            raise ValueError("Invalid master_end %r" % master_end)
+        if len(engagement) < 2:
+            raise ValueError("SyncGroup requires at least 2 stages of engagement")
+        self.engagement  = [bool(e) for e in engagement]
+        self.master_end  = master_end
+        self.sync_active = bool(sync_active)
+
+    @property
+    def n(self):
+        return len(self.engagement)
+
+    def engaged_stages(self):
+        return [i for i, e in enumerate(self.engagement) if e]
+
+    def __eq__(self, other):
+        if not isinstance(other, SyncGroup):
+            return NotImplemented
+        return (self.engagement == other.engagement
+                and self.master_end == other.master_end
+                and self.sync_active == other.sync_active)
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return result
+        return not result
+
+    def __hash__(self):
+        return hash((tuple(self.engagement), self.master_end, self.sync_active))
+
+    def __repr__(self):
+        return "SyncGroup(engagement=%r, master_end=%r, sync_active=%r)" % (
+            self.engagement, self.master_end, self.sync_active)
+
+
+def sync_group_from_legacy(legacy_mode):
+    """Map a legacy 4-state sync enum value to a SyncGroup (N=2 only).
+
+    LEGACY_NONE and LEGACY_GEAR_ONLY both map to the same SyncGroup with
+    ``sync_active=False`` because they are equivalent in chain-mechanical
+    semantics (the difference is a Klipper plumbing fence). The
+    ``master_end`` is set to MASTER_TOOLHEAD for the unsynced case purely as
+    a default; it has no operational effect when ``sync_active=False``.
+    """
+    if legacy_mode in (LEGACY_NONE, LEGACY_GEAR_ONLY):
+        return SyncGroup(engagement=[True, True],
+                         master_end=MASTER_TOOLHEAD, sync_active=False)
+    if legacy_mode == LEGACY_GEAR_SYNCED_TO_EXTRUDER:
+        return SyncGroup(engagement=[True, True],
+                         master_end=MASTER_TOOLHEAD, sync_active=True)
+    if legacy_mode == LEGACY_EXTRUDER_SYNCED_TO_GEAR:
+        return SyncGroup(engagement=[True, True],
+                         master_end=MASTER_SPOOL, sync_active=True)
+    if legacy_mode == LEGACY_EXTRUDER_ONLY_ON_GEAR:
+        return SyncGroup(engagement=[False, True],
+                         master_end=MASTER_SPOOL, sync_active=True)
+    raise ValueError("Unknown legacy sync mode: %r" % legacy_mode)
+
+
+def sync_group_to_legacy(group, prefer_gear_only_for_unsynced=False):
+    """Map a SyncGroup back to a legacy 4-state value (N=2 only).
+
+    The mapping is bijective except for the unsynced case: ``sync_active=False``
+    maps to either LEGACY_NONE (default) or LEGACY_GEAR_ONLY (when
+    ``prefer_gear_only_for_unsynced=True``). Use LEGACY_GEAR_ONLY when the
+    caller wants the protective-wait fence behavior of the legacy state.
+
+    Raises ValueError if the SyncGroup describes a state that has no legacy
+    equivalent (e.g., N != 2, or a 3-stage configuration).
+    """
+    if group.n != 2:
+        raise ValueError("Legacy enum only describes N=2 sync states (got N=%d)" % group.n)
+    if not group.sync_active:
+        # Engagement must be all True for the unsynced state to match legacy
+        # (legacy code never represents "unsynced with one stepper disengaged"
+        # as a sync_mode; that's handled via _reconfigure_rail_no_lock).
+        if group.engagement != [True, True]:
+            raise ValueError("Unsynced SyncGroup with disengaged stages has no legacy enum equivalent")
+        return LEGACY_GEAR_ONLY if prefer_gear_only_for_unsynced else LEGACY_NONE
+    # sync_active = True
+    if group.engagement == [True, True]:
+        if group.master_end == MASTER_TOOLHEAD:
+            return LEGACY_GEAR_SYNCED_TO_EXTRUDER
+        else:  # MASTER_SPOOL
+            return LEGACY_EXTRUDER_SYNCED_TO_GEAR
+    if group.engagement == [False, True] and group.master_end == MASTER_SPOOL:
+        return LEGACY_EXTRUDER_ONLY_ON_GEAR
+    raise ValueError(
+        "SyncGroup %r has no legacy enum equivalent (likely N>=3 or invalid N=2 mix)" % (group,))
+
+
 # ---------- Legacy N=2 chain factory ----------
 
 def chain_from_legacy_n2(
