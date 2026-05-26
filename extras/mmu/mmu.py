@@ -759,7 +759,7 @@ class Mmu:
 
         # See if we have a TMC controller capable of current control for filament collision detection and syncing
         # on gear_stepper and tip forming on extruder
-        self.gear_tmc = self.extruder_tmc = None
+        self.gear_tmc = self.extruder_tmc = self.booster_tmc = None
         for chip in mmu_machine.TMC_CHIPS:
             if self.gear_tmc is None:
                 self.gear_tmc = self.printer.lookup_object('%s %s' % (chip, mmu_machine.GEAR_STEPPER_CONFIG), None)
@@ -769,6 +769,10 @@ class Mmu:
                 self.extruder_tmc = self.printer.lookup_object("%s %s" % (chip, self.extruder_name), None)
                 if self.extruder_tmc is not None:
                     self.log_debug("Found %s on extruder. Current control enabled. %s" % (chip, "Stallguard 'touch' homing possible." if self.homing_extruder else ""))
+            if self.booster_tmc is None and self.mmu_machine.has_booster:
+                self.booster_tmc = self.printer.lookup_object('%s %s' % (chip, mmu_machine.BOOSTER_STEPPER_CONFIG), None)
+                if self.booster_tmc is not None:
+                    self.log_debug("Found %s on booster stepper. Current control enabled." % chip)
         if self.gear_tmc is None:
             self.log_debug("TMC driver not found for gear_stepper, cannot use current reduction for collision detection or while synchronized printing")
         if self.extruder_tmc is None:
@@ -777,8 +781,10 @@ class Mmu:
         # Establish gear_stepper initial gear_stepper and extruder currents and current percentage
         self.gear_default_run_current = self.gear_tmc.get_status(0)['run_current'] if self.gear_tmc else None
         self.extruder_default_run_current = self.extruder_tmc.get_status(0)['run_current'] if self.extruder_tmc else None
-        self.gear_percentage_run_current = self.extruder_percentage_run_current = 100 # Current run percentages
+        self.booster_default_run_current = self.booster_tmc.get_status(0)['run_current'] if self.booster_tmc else None
+        self.gear_percentage_run_current = self.extruder_percentage_run_current = self.booster_percentage_run_current = 100 # Current run percentages
         self._gear_current_locked = False # True if gear current is currently locked by wrap_gear_current()
+        self._booster_current_locked = False # True if booster current is currently locked by wrap_booster_current()
 
         # Sanity check that required klipper options are enabled
         self.print_stats = self.printer.lookup_object("print_stats", None)
@@ -2340,9 +2346,14 @@ class Mmu:
 
     def motors_onoff(self, on=False, motor="all"):
         stepper_enable = self.printer.lookup_object('stepper_enable')
-        steppers = self.gear_rail.steppers if motor == "gears" else [self.gear_rail.steppers[0]] if self.gear_rail.steppers else []
+        if motor == "gears":
+            steppers = self.gear_rail.steppers
+        elif motor == "booster":
+            steppers = list(getattr(self.mmu_toolhead, 'booster_steppers', None) or [])
+        else:
+            steppers = [self.gear_rail.steppers[0]] if self.gear_rail.steppers else []
         if on:
-            if motor in ["all", "gear", "gears"]:
+            if motor in ["all", "gear", "gears", "booster"]:
                 for stepper in steppers:
                     se = stepper_enable.lookup_enable(stepper.get_name())
                     se.motor_enable(self.mmu_toolhead.get_last_move_time())
@@ -2351,8 +2362,13 @@ class Mmu:
                 self.selector.restore_gate(self.gate_selected)
                 self.selector.filament_hold_move() # Aka selector move position
         else:
-            if motor in ["all", "gear", "gears"]:
-                self.mmu_toolhead.unsync()
+            if motor in ["all", "gear", "gears", "booster"]:
+                if motor != "booster":
+                    # Booster-only disable does not need to unsync the gear rail;
+                    # the gear rail (and its other steppers) keeps its current
+                    # sync state. For any gear-affecting disable we still need
+                    # to unsync to release the extruder.
+                    self.mmu_toolhead.unsync()
                 for stepper in steppers:
                     se = stepper_enable.lookup_enable(stepper.get_name())
                     se.motor_disable(self.mmu_toolhead.get_last_move_time())
@@ -6179,6 +6195,40 @@ class Mmu:
 
     def _restore_gear_current(self, gate=None, percent=100):
         _ = self._adjust_gear_current(gate=gate, percent=percent, restore=True)
+
+    @contextlib.contextmanager
+    def wrap_booster_current(self, percent=100, reason=""):
+        """Run a block with booster stepper current set to percent and restore on exit.
+
+        No-op if no booster is configured or no booster TMC is present.
+        """
+        prev_percent = self._adjust_booster_current(percent=percent, reason=reason)
+        self._booster_current_locked = True
+        try:
+            yield self
+        finally:
+            self._booster_current_locked = False
+            self._restore_booster_current(percent=prev_percent)
+
+    def _adjust_booster_current(self, percent=100, reason="", restore=False):
+        current_percent = self.booster_percentage_run_current
+        if self._booster_current_locked: return current_percent
+        if not (0 < percent < 200): return current_percent
+        if not self.booster_tmc: return current_percent
+        if percent == self.booster_percentage_run_current: return current_percent
+
+        booster_name = mmu_machine.BOOSTER_STEPPER_CONFIG
+        if restore:
+            msg = "Restoring MMU %s run current to %d%% ({}A)" % (booster_name, percent)
+        else:
+            msg = "Modifying MMU %s run current to %d%% ({}A) %s" % (booster_name, percent, reason)
+        target_current = (self.booster_default_run_current * percent) / 100.0
+        self._set_tmc_current(booster_name, target_current, msg)
+        self.booster_percentage_run_current = percent
+        return percent
+
+    def _restore_booster_current(self, percent=100):
+        _ = self._adjust_booster_current(percent=percent, restore=True)
 
     @contextlib.contextmanager
     def _wrap_extruder_current(self, percent=100, reason=""):

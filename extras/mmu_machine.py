@@ -1001,10 +1001,13 @@ class MmuToolHead(toolhead.ToolHead, object):
             for idx, s in enumerate(rail_steppers):
                 suffix = ""
                 if axis == 1:
-                    if gsd is None:
-                        gsd = s.get_step_dist()
-                    if s in self.all_gear_rail_steppers and s not in self.selected_gear_steppers:
-                        suffix = "*** INACTIVE ***"
+                    if s in (getattr(self, 'booster_steppers', None) or []):
+                        suffix = "(BOOSTER)"
+                    else:
+                        if gsd is None:
+                            gsd = s.get_step_dist()
+                        if s in self.all_gear_rail_steppers and s not in self.selected_gear_steppers:
+                            suffix = "*** INACTIVE ***"
                 msg += "Stepper %d: %s (trapq: %s) %s\n" % (idx, s.get_name(), self._match_trapq(s.get_trapq()), suffix)
                 msg += "  - Commanded Pos: %.2f, " % s.get_commanded_position()
                 msg += "MCU Pos: %.2f, " % s.get_mcu_position()
