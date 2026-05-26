@@ -445,6 +445,103 @@ def sync_group_to_legacy(group, prefer_gear_only_for_unsynced=False):
         "SyncGroup %r has no legacy enum equivalent (likely N>=3 or invalid N=2 mix)" % (group,))
 
 
+# ---------- PSF reading combiners (for disengaged-span span-merging) ----------
+#
+# Signed convention (matches MmuSyncFeedbackManager.SF_STATE_*):
+#   -1.0 = max tension (buffer squeezed / filament pulled taut)
+#    0.0 = neutral
+#   +1.0 = max compression (buffer expanded / filament slack)
+#
+# When a releasable stage between two engaged neighbors is disengaged, the
+# two adjacent buffers physically merge into one logical buffer. The PSFs
+# inside that combined region produce multiple readings of (approximately)
+# the same physical span; we combine them into a single value that the
+# slave-stage's rotation distance controller can act on.
+
+
+def combine_psf_average(values, weights=None):
+    """Combine multiple PSF readings by (weighted) average.
+
+    The default combiner for analog or mixed PSFs. Average is principled
+    when the disengaged interior is short enough that friction is the
+    dominant intra-span effect; each PSF samples roughly the same physical
+    tension. Weights let the caller emphasize PSFs nearer a buffer end if
+    geometry warrants it (e.g., weight by adjacent-segment length).
+
+    Args:
+      values: iterable of floats in [-1, 1].
+      weights: optional iterable of non-negative floats, same length.
+
+    Returns:
+      Combined value (float). Empty input returns 0.0.
+    """
+    values = list(values)
+    if not values:
+        return 0.0
+    if weights is None:
+        return sum(values) / len(values)
+    weights = list(weights)
+    if len(weights) != len(values):
+        raise ValueError("weights length %d must match values length %d"
+                         % (len(weights), len(values)))
+    if any(w < 0 for w in weights):
+        raise ValueError("weights must be non-negative")
+    total_w = sum(weights)
+    if total_w == 0:
+        return 0.0
+    return sum(v * w for v, w in zip(values, weights)) / total_w
+
+
+def combine_psf_or(values):
+    """Combine signed switch readings by OR-logic.
+
+    The natural combiner for tension/compression switches. Returns a pair
+    ``(value, anomaly)`` where:
+      - value:    most-extreme single reading (max-magnitude). Returns 0.0 if
+                  all values are 0 (neutral).
+      - anomaly:  True if some readings are tense (< 0) and others are
+                  compressed (> 0). A real combined buffer cannot be both
+                  tense and compressed at the same time; an anomaly almost
+                  certainly indicates a stuck/broken switch, a kink, or
+                  hardware fault. Callers should log this.
+
+    Args:
+      values: iterable of floats in [-1, 1].
+
+    Returns:
+      (combined_value, anomaly_flag).
+    """
+    values = list(values)
+    if not values:
+        return (0.0, False)
+    has_tension     = any(v < 0 for v in values)
+    has_compression = any(v > 0 for v in values)
+    if has_tension and has_compression:
+        return (0.0, True)
+    if has_tension:
+        return (min(values), False)
+    if has_compression:
+        return (max(values), False)
+    return (0.0, False)
+
+
+def switch_reading(tension_active, compression_active):
+    """Convert a pair of switch states to a signed PSF value.
+
+    A tension switch fires when the buffer is squeezed (value -1); a
+    compression switch fires when the buffer is expanded (value +1). The
+    "both active" case is reported as an anomaly via the second tuple
+    element (caller should log; downstream logic should treat as neutral).
+    """
+    if tension_active and compression_active:
+        return (0.0, True)
+    if tension_active:
+        return (-1.0, False)
+    if compression_active:
+        return (1.0, False)
+    return (0.0, False)
+
+
 # ---------- Legacy N=2 chain factory ----------
 
 def chain_from_legacy_n2(

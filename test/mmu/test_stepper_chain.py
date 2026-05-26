@@ -39,6 +39,9 @@ LEGACY_EXTRUDER_SYNCED_TO_GEAR  = sc.LEGACY_EXTRUDER_SYNCED_TO_GEAR
 LEGACY_EXTRUDER_ONLY_ON_GEAR    = sc.LEGACY_EXTRUDER_ONLY_ON_GEAR
 LEGACY_GEAR_SYNCED_TO_EXTRUDER  = sc.LEGACY_GEAR_SYNCED_TO_EXTRUDER
 LEGACY_GEAR_ONLY                = sc.LEGACY_GEAR_ONLY
+combine_psf_average             = sc.combine_psf_average
+combine_psf_or                  = sc.combine_psf_or
+switch_reading                  = sc.switch_reading
 
 
 def _make_stage(name="x", role=ROLE_MMU_RAIL, grip=GRIP_RELEASABLE):
@@ -512,6 +515,85 @@ class TestLegacyBijection(unittest.TestCase):
             sync_group_to_legacy(g, prefer_gear_only_for_unsynced=True),
             LEGACY_GEAR_ONLY,
         )
+
+
+class TestCombinePsfAverage(unittest.TestCase):
+    def test_empty(self):
+        self.assertEqual(combine_psf_average([]), 0.0)
+
+    def test_single_value(self):
+        self.assertEqual(combine_psf_average([-1.0]), -1.0)
+        self.assertEqual(combine_psf_average([0.0]), 0.0)
+        self.assertEqual(combine_psf_average([0.5]), 0.5)
+
+    def test_simple_average(self):
+        self.assertEqual(combine_psf_average([-1.0, 1.0]), 0.0)
+        self.assertEqual(combine_psf_average([-1.0, 0.0]), -0.5)
+        self.assertAlmostEqual(combine_psf_average([0.2, 0.4, 0.6]), 0.4)
+
+    def test_weighted_average(self):
+        # Weight values 2:1 toward the first reading
+        v = combine_psf_average([-1.0, 1.0], weights=[2, 1])
+        self.assertAlmostEqual(v, (-2 + 1) / 3.0)
+
+    def test_zero_weights_returns_zero(self):
+        self.assertEqual(combine_psf_average([1.0, -1.0], weights=[0, 0]), 0.0)
+
+    def test_weight_length_mismatch_rejected(self):
+        with self.assertRaises(ValueError):
+            combine_psf_average([1.0, 2.0], weights=[1.0])
+
+    def test_negative_weight_rejected(self):
+        with self.assertRaises(ValueError):
+            combine_psf_average([1.0, 2.0], weights=[1.0, -0.5])
+
+
+class TestCombinePsfOr(unittest.TestCase):
+    def test_empty(self):
+        self.assertEqual(combine_psf_or([]), (0.0, False))
+
+    def test_all_neutral(self):
+        self.assertEqual(combine_psf_or([0.0, 0.0]), (0.0, False))
+
+    def test_one_tension(self):
+        # Tension on any single switch wins; combined value is the tense reading.
+        self.assertEqual(combine_psf_or([-1.0, 0.0]), (-1.0, False))
+
+    def test_one_compression(self):
+        self.assertEqual(combine_psf_or([0.0, 1.0]), (1.0, False))
+
+    def test_conflicting_anomaly(self):
+        # Tense + compressed on the same combined buffer is impossible
+        # physically; report neutral + anomaly flag.
+        v, anomaly = combine_psf_or([-1.0, 1.0])
+        self.assertEqual(v, 0.0)
+        self.assertTrue(anomaly)
+
+    def test_multiple_tension_picks_most_extreme(self):
+        v, anomaly = combine_psf_or([-0.3, -0.9, 0.0])
+        self.assertEqual(v, -0.9)
+        self.assertFalse(anomaly)
+
+    def test_multiple_compression_picks_most_extreme(self):
+        v, anomaly = combine_psf_or([0.3, 0.9, 0.0])
+        self.assertEqual(v, 0.9)
+        self.assertFalse(anomaly)
+
+
+class TestSwitchReading(unittest.TestCase):
+    def test_neither(self):
+        self.assertEqual(switch_reading(False, False), (0.0, False))
+
+    def test_tension_only(self):
+        self.assertEqual(switch_reading(True, False), (-1.0, False))
+
+    def test_compression_only(self):
+        self.assertEqual(switch_reading(False, True), (1.0, False))
+
+    def test_both_active_is_anomaly(self):
+        v, anomaly = switch_reading(True, True)
+        self.assertEqual(v, 0.0)
+        self.assertTrue(anomaly)
 
 
 if __name__ == "__main__":
