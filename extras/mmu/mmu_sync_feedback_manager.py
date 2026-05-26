@@ -464,6 +464,7 @@ class MmuSyncFeedbackManager:
         # Enable sync feedback
         self.active = True
         self.new_autotuned_rd = None
+        self.new_autotuned_rd_booster = None
 
         # Throw away current autotune info and reset rd
         self._reset_controller(eventtime)
@@ -493,6 +494,11 @@ class MmuSyncFeedbackManager:
         if self.new_autotuned_rd is not None:
             self.mmu.log_info("MmuSyncFeedbackManager: New Autotuned rotation distance (%.4f) for gate %d\n" % (self.new_autotuned_rd, self.mmu.gate_selected))
             self.mmu.calibration_manager.update_gear_rd(self.new_autotuned_rd)
+
+        new_autotuned_rd_booster = getattr(self, 'new_autotuned_rd_booster', None)
+        if new_autotuned_rd_booster is not None and hasattr(self.mmu.calibration_manager, 'update_booster_rd'):
+            self.mmu.log_info("MmuSyncFeedbackManager: New Autotuned booster rotation distance (%.4f)\n" % new_autotuned_rd_booster)
+            self.mmu.calibration_manager.update_booster_rd(new_autotuned_rd_booster)
 
         # Restore default (last tuned) rotation distance
         self.set_default_rd()
@@ -634,7 +640,13 @@ class MmuSyncFeedbackManager:
             self.estimated_state_booster = starting_state_b
             booster_steppers = getattr(self.mmu.mmu_toolhead, 'booster_steppers', None) or []
             if hard_reset:
-                rd_start_b = booster_steppers[0].get_rotation_distance()[0] if booster_steppers else rd_start
+                calibrated_rd = self.mmu.calibration_manager.get_booster_rd() if hasattr(self.mmu.calibration_manager, 'get_booster_rd') else None
+                if calibrated_rd and calibrated_rd > 0:
+                    rd_start_b = calibrated_rd
+                elif booster_steppers:
+                    rd_start_b = booster_steppers[0].get_rotation_distance()[0]
+                else:
+                    rd_start_b = rd_start
             else:
                 rd_start_b = self.ctrl_booster.autotune.get_rec_rd()
             status_b = self.ctrl_booster.reset(eventtime, rd_start_b, starting_state_b,
@@ -665,7 +677,13 @@ class MmuSyncFeedbackManager:
         # output applies to the booster's rotation distance.
         if self.has_booster_sync_feedback():
             booster_steppers = getattr(self.mmu.mmu_toolhead, 'booster_steppers', None) or []
-            rd_start_b = booster_steppers[0].get_rotation_distance()[0] if booster_steppers else rd_start
+            calibrated_rd = self.mmu.calibration_manager.get_booster_rd() if hasattr(self.mmu.calibration_manager, 'get_booster_rd') else None
+            if calibrated_rd and calibrated_rd > 0:
+                rd_start_b = calibrated_rd
+            elif booster_steppers:
+                rd_start_b = booster_steppers[0].get_rotation_distance()[0]
+            else:
+                rd_start_b = rd_start
             cfg_b = SyncControllerConfig(
                 log_sync = bool(self.sync_feedback_debug_log),
                 buffer_range_mm = self.sync_feedback_buffer_range,
@@ -802,7 +820,10 @@ class MmuSyncFeedbackManager:
         autotune = output['autotune']
         rd = autotune.get('rd', None)
         note = autotune.get('note', None)
+        save = autotune.get('save', None)
         if rd is not None:
+            if save and self.mmu.autotune_rotation_distance:
+                self.new_autotuned_rd_booster = rd
             self.mmu.log_debug("MmuSyncFeedbackManager: PSF2 autotune suggests booster reference rd: %.4f\n%s" % (rd, note))
 
         rd_current, rd_prev = output['rd_current'], output['rd_prev']

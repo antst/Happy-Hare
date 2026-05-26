@@ -200,6 +200,7 @@ class Mmu:
     VARS_MMU_CALIB_BOWDEN_LENGTHS     = "mmu_calibration_bowden_lengths" # Per-gate calibrated bowden lengths
     VARS_MMU_CALIB_BOWDEN_HOME        = "mmu_calibration_bowden_home"    # Was encoder, gate or gear sensor used as reference point
     VARS_MMU_CALIB_BOWDEN_LENGTH      = "mmu_calibration_bowden_length"  # DEPRECATED (for upgrade only)
+    VARS_MMU_CALIB_BOOSTER_RD         = "mmu_calibration_booster_rd"     # Booster stepper calibrated rotation distance (single, downstream of selector)
     VARS_MMU_GEAR_ROTATION_DISTANCE   = "mmu_gear_rotation_distance"     # DEPRECATED (for upgrade only)
     VARS_MMU_CALIB_PREFIX             = "mmu_calibration_"               # DEPRECATED (for upgrade only)
 
