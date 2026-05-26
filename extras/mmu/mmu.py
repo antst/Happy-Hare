@@ -118,6 +118,12 @@ class Mmu:
     SENSOR_TENSION             = "filament_tension"      # Filament sync-feedback tension detection
     SENSOR_PROPORTIONAL        = "filament_proportional" # Proportional sync-feedback sensor
 
+    # PSF2 (between booster and extruder). Only active when [stepper_mmu_booster]
+    # is configured AND the corresponding sync_feedback_*_pin_2 pins are set.
+    SENSOR_COMPRESSION_BOOSTER  = "filament_compression_booster"
+    SENSOR_TENSION_BOOSTER      = "filament_tension_booster"
+    SENSOR_PROPORTIONAL_BOOSTER = "filament_proportional_booster"
+
     SENSOR_TOOLHEAD            = "toolhead"
     SENSOR_EXTRUDER_TOUCH      = "mmu_ext_touch"
 
@@ -6541,6 +6547,14 @@ class Mmu:
             self.log_trace("Setting gear motor rotation distance: %.4f" % rd)
             if self.gear_rail.steppers:
                 self.gear_rail.steppers[0].set_rotation_distance(rd)
+
+    # Set the booster stepper rotation distance. No-op if no booster configured.
+    def set_booster_rotation_distance(self, rd):
+        if not rd: return
+        booster_steppers = getattr(self.mmu_toolhead, 'booster_steppers', None) or []
+        if not booster_steppers: return
+        self.log_trace("Setting booster motor rotation distance: %.4f" % rd)
+        booster_steppers[0].set_rotation_distance(rd)
 
     def _moonraker_push_lane_data(self, gate_ids = None):
         gate_ids = [(i, self.gate_spool_id[i]) for i in range(self.num_gates)] if gate_ids is None else gate_ids

@@ -719,6 +719,25 @@ class MmuSensors:
         if analog_pin:
             self.sensors[Mmu.SENSOR_PROPORTIONAL] = MmuProportionalSensor(config, name=Mmu.SENSOR_PROPORTIONAL)
 
+        # Optional PSF2 sensors flanking the booster-extruder buffer. Only
+        # meaningful when [stepper_mmu_booster] is configured. Events are
+        # published on "mmu:sync_feedback_booster" so the sync feedback
+        # manager can route them to the booster's controller independent of
+        # the primary (gear-side) PSF.
+        switch_pins = list(config.getlist('sync_feedback_tension_pin_2', []))
+        if switch_pins:
+            if len(switch_pins) not in [1, num_units]:
+                raise config.error("Invalid number of pins specified with sync_feedback_tension_pin_2. Expected 1 or %d but counted %d" % (num_units, len(switch_pins)))
+            self._create_mmu_sensor(config, Mmu.SENSOR_TENSION_BOOSTER, None, switch_pins, 0, clog=True, tangle=True, button_handler=self._sync_tension_booster_callback)
+        switch_pins = list(config.getlist('sync_feedback_compression_pin_2', []))
+        if switch_pins:
+            if len(switch_pins) not in [1, num_units]:
+                raise config.error("Invalid number of pins specified with sync_feedback_compression_pin_2. Expected 1 or %d but counted %d" % (num_units, len(switch_pins)))
+            self._create_mmu_sensor(config, Mmu.SENSOR_COMPRESSION_BOOSTER, None, switch_pins, 0, clog=True, tangle=True, button_handler=self._sync_compression_booster_callback)
+        analog_pin = config.get('sync_feedback_analog_pin_2', None)
+        if analog_pin:
+            self.sensors[Mmu.SENSOR_PROPORTIONAL_BOOSTER] = MmuProportionalSensor(config, name=Mmu.SENSOR_PROPORTIONAL_BOOSTER)
+
 
     def _create_mmu_sensor(
         self, config, name_prefix, gate, switch_pins, event_delay,
@@ -813,6 +832,33 @@ class MmuSensors:
 
         # Send event now so it is processed as early as possible
         self.printer.send_event("mmu:sync_feedback", eventtime, event_value)
+
+
+    def _sync_tension_booster_callback(self, eventtime, t_sensor_name, tension_state, runout_helper):
+        """Button event handler for the PSF2 (booster-extruder) tension switch."""
+        from .mmu import Mmu
+        c_sensor_name = t_sensor_name.replace(Mmu.SENSOR_TENSION_BOOSTER, Mmu.SENSOR_COMPRESSION_BOOSTER)
+        compression_sensor = self.printer.lookup_object("filament_switch_sensor %s" % c_sensor_name, None)
+        compression_enabled = compression_sensor.runout_helper.sensor_enabled if compression_sensor else False
+        compression_state = compression_sensor.runout_helper.filament_present if compression_enabled else False
+        if compression_enabled:
+            event_value = 0 if tension_state == compression_state else (-1 if tension_state else 1)
+        else:
+            event_value = -tension_state
+        self.printer.send_event("mmu:sync_feedback_booster", eventtime, event_value)
+
+    def _sync_compression_booster_callback(self, eventtime, c_sensor_name, compression_state, runout_helper):
+        """Button event handler for the PSF2 (booster-extruder) compression switch."""
+        from .mmu import Mmu
+        t_sensor_name = c_sensor_name.replace(Mmu.SENSOR_COMPRESSION_BOOSTER, Mmu.SENSOR_TENSION_BOOSTER)
+        tension_sensor = self.printer.lookup_object("filament_switch_sensor %s" % t_sensor_name, None)
+        tension_enabled = tension_sensor.runout_helper.sensor_enabled if tension_sensor else False
+        tension_state = tension_sensor.runout_helper.filament_present if tension_enabled else False
+        if tension_enabled:
+            event_value = 0 if compression_state == tension_state else (1 if compression_state else -1)
+        else:
+            event_value = compression_state
+        self.printer.send_event("mmu:sync_feedback_booster", eventtime, event_value)
 
 
 def load_config(config):

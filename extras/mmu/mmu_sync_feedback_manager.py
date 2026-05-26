@@ -44,9 +44,11 @@ class MmuSyncFeedbackManager:
         self.mmu.managers.append(self)
 
         self.estimated_state = float(self.SF_STATE_NEUTRAL)
+        self.estimated_state_booster = float(self.SF_STATE_NEUTRAL)
         self.active = False           # Sync-feedback actively operating?
         self.flowguard_active = False # FlowGuard armed?
-        self.ctrl = None
+        self.ctrl = None              # PSF1 controller (gear-side; adjusts gear RD)
+        self.ctrl_booster = None      # PSF2 controller (booster-side; adjusts booster RD). None unless PSF2 is configured.
         self.flow_rate = 100.         # Estimated % flowrate (calc only for proportional sensors)
 
         # Process config
@@ -69,6 +71,7 @@ class MmuSyncFeedbackManager:
         self.mmu.printer.register_event_handler("mmu:synced", self._handle_mmu_synced)
         self.mmu.printer.register_event_handler("mmu:unsynced", self._handle_mmu_unsynced)
         self.mmu.printer.register_event_handler("mmu:sync_feedback", self._handle_sync_feedback)
+        self.mmu.printer.register_event_handler("mmu:sync_feedback_booster", self._handle_sync_feedback_booster)
 
         # Initial flowguard status
         self.flowguard_status = {'trigger': '', 'reason': '', 'level': 0.0, 'max_clog': 0.0, 'max_tangle': 0.0, 'active': False, 'enabled': bool(self.flowguard_enabled)}
@@ -270,8 +273,28 @@ class MmuSyncFeedbackManager:
         return has_tension, has_compression, has_proportional
 
 
+    def get_active_booster_sensors(self):
+        """Tuple of active PSF2 (booster-extruder buffer) sensors."""
+        sm = self.mmu.sensor_manager
+        return (
+            sm.has_sensor(self.mmu.SENSOR_TENSION_BOOSTER),
+            sm.has_sensor(self.mmu.SENSOR_COMPRESSION_BOOSTER),
+            sm.has_sensor(self.mmu.SENSOR_PROPORTIONAL_BOOSTER),
+        )
+
+
     def has_sync_feedback(self):
         return all(s is not None for s in self.get_active_sensors())
+
+
+    def has_booster_sync_feedback(self):
+        """True if any PSF2 sensor is configured.
+
+        PSF2 sits between the booster and the extruder. When True, a second
+        SyncController is instantiated and updates the booster's rotation
+        distance independently of the primary (gear-side) controller.
+        """
+        return any(self.get_active_booster_sensors())
 
 
     #
@@ -492,6 +515,13 @@ class MmuSyncFeedbackManager:
         status = self.ctrl.update(eventtime, move, state)
         self._process_status(eventtime, status)
 
+        # Drive the PSF2 controller from the same extruder movement; its
+        # state reading and RD application are independent of the primary.
+        if self.ctrl_booster is not None:
+            state_b = self._get_sensor_state_booster()
+            status_b = self.ctrl_booster.update(eventtime, move, state_b)
+            self._process_status_booster(eventtime, status_b)
+
 
     def _handle_sync_feedback(self, eventtime, state):
         """
@@ -597,6 +627,20 @@ class MmuSyncFeedbackManager:
         status = self.ctrl.reset(eventtime, rd_start, starting_state, log_file=self._telemetry_log_path(), hard_reset=hard_reset)
         self._process_status(eventtime, status) # May adjust rotation_distance
 
+        # Reset PSF2 controller in parallel when present
+        if self.ctrl_booster is not None:
+            self.ctrl_booster.cfg.sensor_type = self._get_sensor_type_booster()
+            starting_state_b = self._get_sensor_state_booster()
+            self.estimated_state_booster = starting_state_b
+            booster_steppers = getattr(self.mmu.mmu_toolhead, 'booster_steppers', None) or []
+            if hard_reset:
+                rd_start_b = booster_steppers[0].get_rotation_distance()[0] if booster_steppers else rd_start
+            else:
+                rd_start_b = self.ctrl_booster.autotune.get_rec_rd()
+            status_b = self.ctrl_booster.reset(eventtime, rd_start_b, starting_state_b,
+                                               log_file=self._telemetry_log_path(), hard_reset=hard_reset)
+            self._process_status_booster(eventtime, status_b)
+
 
     def _init_controller(self):
         """
@@ -615,6 +659,23 @@ class MmuSyncFeedbackManager:
             flowguard_relief_mm = self.flowguard_max_relief,
         )
         self.ctrl = SyncController(cfg)
+
+        # Optional PSF2 (booster-extruder buffer) controller. Independent
+        # state, autotune, and flowguard from the primary controller; its
+        # output applies to the booster's rotation distance.
+        if self.has_booster_sync_feedback():
+            booster_steppers = getattr(self.mmu.mmu_toolhead, 'booster_steppers', None) or []
+            rd_start_b = booster_steppers[0].get_rotation_distance()[0] if booster_steppers else rd_start
+            cfg_b = SyncControllerConfig(
+                log_sync = bool(self.sync_feedback_debug_log),
+                buffer_range_mm = self.sync_feedback_buffer_range,
+                buffer_max_range_mm = self.sync_feedback_buffer_maxrange,
+                sensor_type = self._get_sensor_type_booster(),
+                use_twolevel_for_type_p = self.sync_feedback_force_twolevel,
+                rd_start = rd_start_b,
+                flowguard_relief_mm = self.flowguard_max_relief,
+            )
+            self.ctrl_booster = SyncController(cfg_b)
         return self.ctrl
 
 
@@ -684,6 +745,70 @@ class MmuSyncFeedbackManager:
             else "TO" if has_tension
             else "Unknown"
         )
+
+
+    def _get_sensor_type_booster(self):
+        """PSF2 sensor type — same vocabulary as _get_sensor_type."""
+        has_tension, has_compression, has_proportional = self.get_active_booster_sensors()
+        return (
+            "P" if has_proportional
+            else "D" if has_compression and has_tension
+            else "CO" if has_compression
+            else "TO" if has_tension
+            else "Unknown"
+        )
+
+
+    def _get_sensor_state_booster(self):
+        """PSF2 sensor reading. Same convention as _get_sensor_state."""
+        sm = self.mmu.sensor_manager
+        if sm.has_sensor(self.mmu.SENSOR_PROPORTIONAL_BOOSTER):
+            sensor = sm.sensors.get(self.mmu.SENSOR_PROPORTIONAL_BOOSTER)
+            return sensor.get_status(0).get('value', 0.)
+        tension_active     = sm.check_sensor(self.mmu.SENSOR_TENSION_BOOSTER)
+        compression_active = sm.check_sensor(self.mmu.SENSOR_COMPRESSION_BOOSTER)
+        if tension_active == compression_active:
+            return self.SF_STATE_NEUTRAL
+        if compression_active:
+            return self.SF_STATE_COMPRESSION
+        if tension_active:
+            return self.SF_STATE_TENSION
+        return self.SF_STATE_NEUTRAL
+
+
+    def _handle_sync_feedback_booster(self, eventtime, state):
+        """Event call when PSF2 (booster-extruder) state changes."""
+        if not (self.mmu.is_enabled and self.sync_feedback_enabled and self.active): return
+        if self.ctrl_booster is None: return
+        if eventtime is None: eventtime = self.mmu.reactor.monotonic()
+
+        self.mmu.log_debug("MmuSyncFeedbackManager: PSF2 (booster) state changed to %s" % state)
+        move = self.extruder_monitor.get_and_reset_accumulated(self._handle_extruder_movement)
+        status = self.ctrl_booster.update(eventtime, move, state)
+        self._process_status_booster(eventtime, status)
+
+
+    def _process_status_booster(self, eventtime, status):
+        """Apply PSF2 controller recommendations to the booster's rotation distance.
+
+        Independent of the primary controller's logic. Autotune and flowguard
+        of the booster controller live alongside the primary's but apply to
+        the booster stepper only. Status mapping mirrors _process_status but
+        targets the booster RD via set_booster_rotation_distance().
+        """
+        output = status['output']
+        self.estimated_state_booster = output['sensor_ui']
+
+        autotune = output['autotune']
+        rd = autotune.get('rd', None)
+        note = autotune.get('note', None)
+        if rd is not None:
+            self.mmu.log_debug("MmuSyncFeedbackManager: PSF2 autotune suggests booster reference rd: %.4f\n%s" % (rd, note))
+
+        rd_current, rd_prev = output['rd_current'], output['rd_prev']
+        if rd_current != rd_prev:
+            self.mmu.log_debug("MmuSyncFeedbackManager: Altered booster rotation distance from %.4f to %.4f" % (rd_prev, rd_current))
+            self.mmu.set_booster_rotation_distance(rd_current)
 
 
     def _adjust_filament_tension_switch(self, use_gear_motor=True, max_move=None):
