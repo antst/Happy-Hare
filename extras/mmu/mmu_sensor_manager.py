@@ -34,7 +34,10 @@ class MmuSensorManager:
             self.mmu.SENSOR_GATE,
             self.mmu.SENSOR_TENSION,
             self.mmu.SENSOR_COMPRESSION,
-            self.mmu.SENSOR_PROPORTIONAL
+            self.mmu.SENSOR_PROPORTIONAL,
+            self.mmu.SENSOR_TENSION_BOOSTER,
+            self.mmu.SENSOR_COMPRESSION_BOOSTER,
+            self.mmu.SENSOR_PROPORTIONAL_BOOSTER,
         ])
         if self.mmu.mmu_machine.num_units > 1:
             for i in range(self.mmu.mmu_machine.num_units):
@@ -43,6 +46,8 @@ class MmuSensorManager:
                 sensor_names.append(self.get_unit_sensor_name(self.mmu.SENSOR_COMPRESSION, i))
                 sensor_names.append(self.get_unit_sensor_name(self.mmu.SENSOR_PROPORTIONAL, i))
         sensor_names.extend([
+            self.mmu.SENSOR_PRE_BOOSTER,
+            self.mmu.SENSOR_POST_BOOSTER,
             self.mmu.SENSOR_EXTRUDER_ENTRY,
             self.mmu.SENSOR_TOOLHEAD
         ])
@@ -60,7 +65,9 @@ class MmuSensorManager:
         self.endstop_names.extend([
             self.mmu.SENSOR_GATE,
             self.mmu.SENSOR_TENSION,
-            self.mmu.SENSOR_COMPRESSION
+            self.mmu.SENSOR_COMPRESSION,
+            self.mmu.SENSOR_TENSION_BOOSTER,
+            self.mmu.SENSOR_COMPRESSION_BOOSTER,
         ])
         if self.mmu.mmu_machine.num_units > 1:
             for i in range(self.mmu.mmu_machine.num_units):
@@ -68,6 +75,8 @@ class MmuSensorManager:
                 self.endstop_names.append(self.get_unit_sensor_name(self.mmu.SENSOR_COMPRESSION, i))
                 self.endstop_names.append(self.get_unit_sensor_name(self.mmu.SENSOR_TENSION, i))
         self.endstop_names.extend([
+            self.mmu.SENSOR_PRE_BOOSTER,
+            self.mmu.SENSOR_POST_BOOSTER,
             self.mmu.SENSOR_EXTRUDER_ENTRY,
             self.mmu.SENSOR_TOOLHEAD
         ])
@@ -92,7 +101,7 @@ class MmuSensorManager:
 
                 # This ensures rapid stopping of extruder stepper when endstop is hit on synced homing
                 # otherwise the extruder can continue to move a small (speed dependent) distance
-                if self.mmu.homing_extruder and name in [self.mmu.SENSOR_TOOLHEAD, self.mmu.SENSOR_COMPRESSION, self.mmu.SENSOR_TENSION]:
+                if self.mmu.homing_extruder and name in [self.mmu.SENSOR_TOOLHEAD, self.mmu.SENSOR_COMPRESSION, self.mmu.SENSOR_TENSION, self.mmu.SENSOR_COMPRESSION_BOOSTER, self.mmu.SENSOR_TENSION_BOOSTER]:
                     mcu_endstop.add_stepper(self.mmu.mmu_extruder_stepper.stepper)
             else:
                 logging.warning("MMU: Filament sensor %s is not defined in [mmu_sensors]" % name)
@@ -106,6 +115,11 @@ class MmuSensorManager:
             self.mmu.SENSOR_COMPRESSION: self.get_mapped_endstop_name(self.mmu.SENSOR_COMPRESSION),
             self.mmu.SENSOR_TENSION: self.get_mapped_endstop_name(self.mmu.SENSOR_TENSION),
             self.mmu.SENSOR_PROPORTIONAL: self.get_mapped_endstop_name(self.mmu.SENSOR_PROPORTIONAL),
+            self.mmu.SENSOR_COMPRESSION_BOOSTER: self.get_mapped_endstop_name(self.mmu.SENSOR_COMPRESSION_BOOSTER),
+            self.mmu.SENSOR_TENSION_BOOSTER: self.get_mapped_endstop_name(self.mmu.SENSOR_TENSION_BOOSTER),
+            self.mmu.SENSOR_PROPORTIONAL_BOOSTER: self.get_mapped_endstop_name(self.mmu.SENSOR_PROPORTIONAL_BOOSTER),
+            self.mmu.SENSOR_PRE_BOOSTER: self.mmu.SENSOR_PRE_BOOSTER,
+            self.mmu.SENSOR_POST_BOOSTER: self.mmu.SENSOR_POST_BOOSTER,
             self.mmu.SENSOR_EXTRUDER_ENTRY: self.mmu.SENSOR_EXTRUDER_ENTRY,
             self.mmu.SENSOR_TOOLHEAD: self.mmu.SENSOR_TOOLHEAD
         }
@@ -296,6 +310,9 @@ class MmuSensorManager:
                 (self.get_gate_sensor_name(self.mmu.SENSOR_PRE_GATE_PREFIX, gate), None),
                 (self.get_gate_sensor_name(self.mmu.SENSOR_GEAR_PREFIX, gate), self.mmu.FILAMENT_POS_HOMED_GATE if self.mmu.gate_homing_endstop == self.mmu.SENSOR_GEAR_PREFIX and self.mmu.gate_parking_distance <= 0 else None),
                 (self.mmu.SENSOR_GATE, self.mmu.FILAMENT_POS_HOMED_GATE),
+                # None until per-buffer FILAMENT_POS_* crossing states land
+                (self.mmu.SENSOR_PRE_BOOSTER, None),
+                (self.mmu.SENSOR_POST_BOOSTER, None),
                 (self.mmu.SENSOR_EXTRUDER_ENTRY, self.mmu.FILAMENT_POS_HOMED_ENTRY),
                 (self.mmu.SENSOR_TOOLHEAD, self.mmu.FILAMENT_POS_HOMED_TS),
             ]

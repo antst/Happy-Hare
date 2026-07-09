@@ -41,6 +41,7 @@ TMC_CHIPS = ["tmc2209", "tmc2130", "tmc2208", "tmc2660", "tmc5160", "tmc2240"]
 # Stepper config sections
 SELECTOR_STEPPER_CONFIG = "stepper_mmu_selector" # Optional
 GEAR_STEPPER_CONFIG     = "stepper_mmu_gear"
+BOOSTER_STEPPER_CONFIG  = "stepper_mmu_booster"  # Optional, between gear and extruder
 
 SHAREABLE_STEPPER_PARAMS = ['rotation_distance', 'gear_ratio', 'microsteps', 'full_steps_per_rotation']
 OTHER_STEPPER_PARAMS     = ['step_pin', 'dir_pin', 'enable_pin', 'endstop_pin', 'rotation_distance', 'pressure_advance', 'pressure_advance_smooth_time']
@@ -379,6 +380,16 @@ class MmuMachine:
             self.unit_status["unit_%d" % i] = unit_info
             self.unit_status['num_units'] = len(self.gate_counts)
 
+    @property
+    def has_booster(self):
+        """True if [stepper_mmu_booster] is configured.
+
+        Use to gate booster-specific UI/diagnostic paths; the runtime
+        sync/move paths do not need to branch on this because the booster
+        moves with the gear rail automatically.
+        """
+        return self.config.has_section(BOOSTER_STEPPER_CONFIG)
+
     def get_mmu_unit_by_index(self, index): # Hack to allow some v4 functionality into the v3 line
         if index >= 0 and index < self.num_units:
             return self.units[index]
@@ -537,6 +548,18 @@ class MmuToolHead(toolhead.ToolHead, object):
             steppers = list(self.kin.rails[1].get_steppers())
             self.all_gear_rail_steppers = steppers.copy()
             self.selected_gear_steppers = steppers.copy()
+            # The booster (if [stepper_mmu_booster] is configured) is attached
+            # to the gear rail as an extra stepper and therefore appears in
+            # all_gear_rail_steppers above. Track its stepper objects separately
+            # for callers that need to distinguish booster from gear (e.g. PSF
+            # feedback, per-stepper current control, multigear gear selection).
+            self.booster_steppers = []
+            if config.has_section(BOOSTER_STEPPER_CONFIG):
+                booster_section_name = BOOSTER_STEPPER_CONFIG
+                for s in self.all_gear_rail_steppers:
+                    if s.get_name() == booster_section_name:
+                        self.booster_steppers.append(s)
+                        break
         except config.error:
             raise
         except self.printer.lookup_object('pins').error:
@@ -625,9 +648,14 @@ class MmuToolHead(toolhead.ToolHead, object):
         pos = [0., self.mmu_toolhead.get_position()[1], 0.]
         gear_rail.steppers = []
 
+        booster_steppers = getattr(self, 'booster_steppers', None) or []
         self.selected_gear_steppers = []
         for s in self.all_gear_rail_steppers:
-            if selected and s.get_name() in selected:
+            # Booster steppers must always stay registered: they are mechanically
+            # downstream of the selector merge point and always grip the filament
+            # regardless of which gate is currently selected.
+            is_booster = s in booster_steppers
+            if (selected and s.get_name() in selected) or is_booster:
                 self.selected_gear_steppers.append(s)
                 gear_rail.steppers.append(s)
                 self._register(m_th, s, trapq=mmu_trapq) # s.set_trapq(mmu_trapq)
@@ -973,10 +1001,13 @@ class MmuToolHead(toolhead.ToolHead, object):
             for idx, s in enumerate(rail_steppers):
                 suffix = ""
                 if axis == 1:
-                    if gsd is None:
-                        gsd = s.get_step_dist()
-                    if s in self.all_gear_rail_steppers and s not in self.selected_gear_steppers:
-                        suffix = "*** INACTIVE ***"
+                    if s in (getattr(self, 'booster_steppers', None) or []):
+                        suffix = "(BOOSTER)"
+                    else:
+                        if gsd is None:
+                            gsd = s.get_step_dist()
+                        if s in self.all_gear_rail_steppers and s not in self.selected_gear_steppers:
+                            suffix = "*** INACTIVE ***"
                 msg += "Stepper %d: %s (trapq: %s) %s\n" % (idx, s.get_name(), self._match_trapq(s.get_trapq()), suffix)
                 msg += "  - Commanded Pos: %.2f, " % s.get_commanded_position()
                 msg += "MCU Pos: %.2f, " % s.get_mcu_position()
@@ -1039,6 +1070,15 @@ class MmuKinematics:
             self.rails.append(DummyRail())
         self.rails.append(MmuLookupMultiRail(config.getsection(GEAR_STEPPER_CONFIG), need_position_minmax=False, default_position_endstop=0.))
         self.rails[1].setup_itersolve('cartesian_stepper_alloc', b'y')
+
+        # Optional booster stepper. Attaches to the gear rail as an extra stepper
+        # so it moves whenever the gear rail moves, and follows the extruder
+        # automatically during print sync (because the whole gear rail follows
+        # extruder in GEAR_SYNCED_TO_EXTRUDER mode). Per-stepper rotation_distance
+        # is preserved, so PSF feedback can modulate gear and booster
+        # independently. Absent on every legacy config.
+        if config.has_section(BOOSTER_STEPPER_CONFIG):
+            self.rails[1].add_stepper_from_config(config.getsection(BOOSTER_STEPPER_CONFIG))
 
         for s in self.get_steppers():
             s.set_trapq(toolhead.get_trapq())

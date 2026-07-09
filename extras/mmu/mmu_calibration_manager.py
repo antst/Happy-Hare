@@ -130,6 +130,35 @@ class MmuCalibrationManager:
             self.mmu.encoder_sensor.set_clog_detection_length(cdl)
 
 
+    # -------------------- Booster stepper rotation distance --------------------
+    # The booster sits downstream of the selector merge and so has a single
+    # rotation distance (not per-gate). Used by PSF2 as its calibrated
+    # reference. Persistence is via the dedicated variable
+    # VARS_MMU_CALIB_BOOSTER_RD (None when unset; the manager then falls back
+    # to the booster stepper's configured rotation_distance).
+
+    def get_booster_rd(self):
+        """Calibrated booster rotation distance, or None if uncalibrated.
+
+        Callers needing a usable value should fall back to the booster
+        stepper's configured rotation_distance when this returns None.
+        """
+        return self.mmu.save_variables.allVariables.get(
+            getattr(self.mmu, 'VARS_MMU_CALIB_BOOSTER_RD', 'mmu_calib_booster_rd'),
+            None,
+        )
+
+    def update_booster_rd(self, rd, console_msg=False):
+        rd = round(rd, 4) if rd > 0 else rd
+        key = getattr(self.mmu, 'VARS_MMU_CALIB_BOOSTER_RD', 'mmu_calib_booster_rd')
+        self.mmu.save_variable(key, rd)
+        msg = "Booster rotation distance calibration (%.4f) has been saved" % rd
+        if console_msg:
+            self.mmu.log_always(msg)
+        else:
+            self.mmu.log_debug(msg)
+
+
     # -------------------- Gear stepper rotation distance manipulation --------------------
     # Notes:
     #  - If the rotation distance is changed for gate with calibrated bowden length then adjust bowden length
